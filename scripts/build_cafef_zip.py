@@ -99,12 +99,11 @@ def find_latest_upto_bundle() -> CafeFBundle:
             f1 = p1.format(d=d_str)
             f2 = p2.format(d=d_str)
             u1 = f"{BASE_URL}/{folder}/{f1}"
-                    found_package_date_iso=d.isoformat(),
-                    folder=folder,
-                    solieu_url=u1,
-                    index_url=u2,
-                    pattern_used=kind,
-                )
+            found_package_date_iso=d.isoformat(),
+            folder=folder,
+            solieu_url=u1,
+            index_url=u2,
+            pattern_used=kind,
 
     raise RuntimeError("Không tìm thấy bộ file CafeF (Upto hoặc theo ngày) trong phạm vi lùi 7 ngày.")
 
