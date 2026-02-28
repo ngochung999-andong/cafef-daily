@@ -94,19 +94,24 @@ def find_latest_upto_bundle() -> CafeFBundle:
     for back in range(0, MAX_BACK_DAYS + 1):
         d = today - dt.timedelta(days=back)
         d_str = ddmmyyyy(d)
+        folder = yyyymmdd(d)
 
         for kind, p1, p2 in patterns:
             f1 = p1.format(d=d_str)
             f2 = p2.format(d=d_str)
             u1 = f"{BASE_URL}/{folder}/{f1}"
-            found_package_date_iso=d.isoformat(),
-            folder=folder,
-            solieu_url=u1,
-            index_url=u2,
-            pattern_used=kind,
+            u2 = f"{BASE_URL}/{folder}/{f2}"
+
+            if head_ok(u1) and head_ok(u2):
+                return CafeFBundle(
+                    found_package_date_iso=d.isoformat(),
+                    folder=folder,
+                    solieu_url=u1,
+                    index_url=u2,
+                    pattern_used=kind,
+                )
 
     raise RuntimeError("Không tìm thấy bộ file CafeF (Upto hoặc theo ngày) trong phạm vi lùi 7 ngày.")
-
 
 def build_daily_urls_for_date(d_iso: str) -> Tuple[str, str]:
     d = dt.date.fromisoformat(d_iso)
@@ -147,14 +152,14 @@ def normalize_files(extract_dir: Path) -> None:
             name = f.name.upper()
             if f".{key}." in name or f".{key}_" in name or name.endswith(f"{key}.CSV"):
                 cand.append(f)
+
         if not cand:
             cand = [f for f in files if key in f.name.upper()]
+
         if not cand:
             raise RuntimeError(f"Thiếu file cho {key} trong zip.")
+
         cand.sort(key=lambda x: x.stat().st_size, reverse=True)
-            u2 = f"{BASE_URL}/{folder}/{f2}"
-            if head_ok(u1) and head_ok(u2):
-                return CafeFBundle(
         shutil.copyfile(cand[0], extract_dir / out_name)
 
 
