@@ -1,14 +1,26 @@
 # scripts/build_cafef_zip.py
-# Mục tiêu:
-# 1) Tải bộ Upto (SolieuGD + Index) mới nhất (lùi tối đa 7 ngày)
-# 2) Chuẩn hoá 4 file CSV: CafeF.HSX.csv / CafeF.HNX.csv / CafeF.UPCOM.csv / CafeF.INDEX.csv
-# 3) Kiểm tra nếu bộ Upto thiếu phiên cuối (ngày target = found_package_date) thì tải thêm bộ theo ngày
-#    (CafeF.SolieuGD.DDMMYYYY.zip + CafeF.Index.DDMMYYYY.zip) và ghép (append) phần thiếu vào file Upto
-# 4) Đóng gói thành out/cafef.zip và out/latest.json
+# ============================================================
+# MỤC TIÊU (đúng theo yêu cầu của bạn)
+# 1) "Chốt" ngày giao dịch cuối cùng (expected_last_trade_date) BẰNG WEB:
+#    - Dò trên web CafeF (ami_data) để tìm ngày mới nhất mà:
+#      + CafeF.Index.DDMMYYYY.zip tồn tại (HEAD 200)
+#      + Và bên trong CSV index thật sự có ngày đó
+#    => đó là "ngày đủ số liệu" để bản tin dùng.
+# 2) Download bộ Upto mới nhất (SolieuGD.Upto + Index.Upto) từ CafeF.
+# 3) Giải nén + chuẩn hoá ra 4 file:
+#    CafeF.HSX.csv / CafeF.HNX.csv / CafeF.UPCOM.csv / CafeF.INDEX.csv
+# 4) Kiểm tra ngày max trong các file Upto.
+#    Nếu chưa đủ đến expected_last_trade_date:
+#      - Tải bổ sung các bộ theo ngày (CafeF.SolieuGD.DDMMYYYY.zip + CafeF.Index.DDMMYYYY.zip)
+#      - Ghép (append, chống trùng) dữ liệu cho đủ ngày
+# 5) Sau khi đủ, mới tạo out/cafef.zip và out/latest.json
 #
-# Ghi chú:
-# - Tham số ?t=... (cache buster) KHÔNG bắt buộc, thường tải được khi bỏ.
-# - Mã này ưu tiên độ bền: heuristic parse date + chống trùng bằng key.
+# GHI CHÚ THỰC DỤNG
+# - Việc "chốt ngày giao dịch cuối" ở đây dựa trên web CafeF: ngày nào daily index zip tồn tại
+#   và CSV index chứa đúng ngày đó => coi là ngày giao dịch đã có dữ liệu publish.
+# - Script tự bỏ qua ngày nghỉ/cuối tuần vì daily zip sẽ không tồn tại.
+# - Không cần tham số ?t=... (cache-buster). HEAD/GET thường vẫn OK.
+# ============================================================
 
 from __future__ import annotations
 
@@ -19,13 +31,18 @@ import shutil
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import requests
 
 TZ_OFFSET = 7  # GMT+7
 BASE_URL = "https://cafef1.mediacdn.vn/data/ami_data"
-MAX_BACK_DAYS = 7
+
+# Tìm ngày giao dịch cuối trên web trong phạm vi lùi bao nhiêu ngày
+LOOKBACK_LAST_TRADE_DAYS = 14
+
+# Tìm bộ Upto trong phạm vi lùi bao nhiêu ngày
+MAX_BACK_DAYS_FOR_UPTO = 7
 
 OUT_DIR = Path("out")
 WORK_DIR = Path("work")
@@ -46,6 +63,10 @@ def yyyymmdd(d: dt.date) -> str:
     return d.strftime("%Y%m%d")
 
 
+def iso_to_date(s: str) -> dt.date:
+    return dt.date.fromisoformat(s)
+
+
 # ----------------------------
 # Network helpers
 # ----------------------------
@@ -57,7 +78,7 @@ def head_ok(url: str, timeout: int = 20) -> bool:
         return False
 
 
-def download(url: str, path: Path, timeout: int = 180) -> None:
+def download(url: str, path: Path, timeout: int = 240) -> None:
     r = requests.get(url, timeout=timeout, stream=True)
     r.raise_for_status()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -68,57 +89,23 @@ def download(url: str, path: Path, timeout: int = 180) -> None:
 
 
 # ----------------------------
-# CafeF URL discovery
+# CafeF URL builders
 # ----------------------------
-@dataclass(frozen=True)
-class CafeFBundle:
-    found_package_date_iso: str  # YYYY-MM-DD
-    folder: str  # YYYYMMDD
-    solieu_url: str
-    index_url: str
-    pattern_used: str  # "upto" or "daily"
-
-
-def find_latest_upto_bundle() -> CafeFBundle:
-    """
-    Tìm bộ Upto mới nhất trong phạm vi lùi MAX_BACK_DAYS.
-    Ưu tiên Upto; nếu không có Upto thì fallback daily (nhưng vẫn coi như bundle chính).
-    """
-    today = now_gmt7().date()
-
-    patterns = [
-        ("upto", "CafeF.SolieuGD.Upto{d}.zip", "CafeF.Index.Upto{d}.zip"),
-        ("daily", "CafeF.SolieuGD.{d}.zip", "CafeF.Index.{d}.zip"),
-    ]
-
-    for back in range(0, MAX_BACK_DAYS + 1):
-        d = today - dt.timedelta(days=back)
-        d_str = ddmmyyyy(d)
-        folder = yyyymmdd(d)
-
-        for kind, p1, p2 in patterns:
-            f1 = p1.format(d=d_str)
-            f2 = p2.format(d=d_str)
-            u1 = f"{BASE_URL}/{folder}/{f1}"
-            u2 = f"{BASE_URL}/{folder}/{f2}"
-
-            if head_ok(u1) and head_ok(u2):
-                return CafeFBundle(
-                    found_package_date_iso=d.isoformat(),
-                    folder=folder,
-                    solieu_url=u1,
-                    index_url=u2,
-                    pattern_used=kind,
-                )
-
-    raise RuntimeError("Không tìm thấy bộ file CafeF (Upto hoặc theo ngày) trong phạm vi lùi 7 ngày.")
-
 def build_daily_urls_for_date(d_iso: str) -> Tuple[str, str]:
-    d = dt.date.fromisoformat(d_iso)
-    d_str = ddmmyyyy(d)
+    d = iso_to_date(d_iso)
     folder = yyyymmdd(d)
+    d_str = ddmmyyyy(d)
     solieu = f"{BASE_URL}/{folder}/CafeF.SolieuGD.{d_str}.zip"
     index = f"{BASE_URL}/{folder}/CafeF.Index.{d_str}.zip"
+    return solieu, index
+
+
+def build_upto_urls_for_date(d_iso: str) -> Tuple[str, str]:
+    d = iso_to_date(d_iso)
+    folder = yyyymmdd(d)
+    d_str = ddmmyyyy(d)
+    solieu = f"{BASE_URL}/{folder}/CafeF.SolieuGD.Upto{d_str}.zip"
+    index = f"{BASE_URL}/{folder}/CafeF.Index.Upto{d_str}.zip"
     return solieu, index
 
 
@@ -180,7 +167,6 @@ def parse_any_date_token(tok: str) -> Optional[str]:
 
     # YYYYMMDD
     if re.match(r"^\d{8}$", tok):
-
         yyyy, mm, dd = tok[0:4], tok[4:6], tok[6:8]
         return f"{yyyy}-{mm}-{dd}"
 
@@ -220,19 +206,26 @@ def extract_key_from_line(line: str) -> Optional[KeyType]:
     return None
 
 
-def file_has_target_date(csv_path: Path, target_iso: str) -> bool:
+def max_date_in_csv(csv_path: Path) -> Optional[str]:
+    """
+    Trả về ISO date lớn nhất (YYYY-MM-DD) xuất hiện trong CSV (bỏ header).
+    Nếu không parse được thì None.
+    """
     if not csv_path.exists():
-        return False
+        return None
     lines = csv_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     if len(lines) < 2:
-        return False
+        return None
+
+    max_iso: Optional[str] = None
     for line in lines[1:]:
         k = extract_key_from_line(line)
         if not k:
             continue
-        if k[-1] == target_iso:
-            return True
-    return False
+        d = k[-1]  # ISO date
+        if (max_iso is None) or (d > max_iso):
+            max_iso = d
+    return max_iso
 
 
 def merge_daily_into_upto(upto_csv: Path, daily_csv: Path, target_iso: str) -> int:
@@ -248,7 +241,6 @@ def merge_daily_into_upto(upto_csv: Path, daily_csv: Path, target_iso: str) -> i
     if not upto_lines or len(daily_lines) < 2:
         return 0
 
-    # Choose header: keep existing upto header
     header = upto_lines[0]
 
     existing: Set[KeyType] = set()
@@ -279,25 +271,6 @@ def merge_daily_into_upto(upto_csv: Path, daily_csv: Path, target_iso: str) -> i
     return len(to_add)
 
 
-def read_data_date_from_index(index_csv: Path) -> str:
-    """
-    Theo quy ước dự án: 2 dòng đầu tiên sau header phản ánh ngày giao dịch gần nhất.
-    Ở đây đọc dòng đầu tiên sau header và cố parse date.
-    """
-    if not index_csv.exists():
-        return "N/A"
-    lines = index_csv.read_text(encoding="utf-8", errors="ignore").splitlines()
-    if len(lines) < 2:
-        return "N/A"
-    row1 = lines[1]
-    tokens = re.split(r"[,\t;]", row1)
-    for t in tokens[:8]:
-        di = parse_any_date_token(t)
-        if di:
-            return di
-    return "N/A"
-
-
 def make_zip(src_dir: Path, zip_path: Path) -> None:
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
@@ -308,99 +281,261 @@ def make_zip(src_dir: Path, zip_path: Path) -> None:
             z.write(p, arcname=name)
 
 
+def csv_contains_date(index_csv: Path, target_iso: str) -> bool:
+    """
+    Kiểm tra file INDEX CSV có chứa dòng thuộc target date không.
+    Dùng để xác nhận "ngày giao dịch cuối" thực sự có trong dữ liệu.
+    """
+    if not index_csv.exists():
+        return False
+    lines = index_csv.read_text(encoding="utf-8", errors="ignore").splitlines()
+    if len(lines) < 2:
+        return False
+    for line in lines[1:]:
+        k = extract_key_from_line(line)
+        if k and k[-1] == target_iso:
+            return True
+    return False
+
+
 # ----------------------------
-# Main pipeline
+# 1) Find expected last trading day on web (CafeF daily index)
+# ----------------------------
+def find_expected_last_trade_date_web() -> str:
+    """
+    Dò web CafeF để chốt 'ngày giao dịch cuối' mà dữ liệu đã có:
+    - Từ hôm nay (GMT+7) lùi LOOKBACK_LAST_TRADE_DAYS
+    - Ngày nào có CafeF.Index.DDMMYYYY.zip và CSV chứa đúng ngày đó => chọn ngày mới nhất
+    """
+    today = now_gmt7().date()
+
+    for back in range(0, LOOKBACK_LAST_TRADE_DAYS + 1):
+        d = today - dt.timedelta(days=back)
+        d_iso = d.isoformat()
+        _, index_url = build_daily_urls_for_date(d_iso)
+
+        if not head_ok(index_url):
+            continue
+
+        # tải nhanh index zip, kiểm tra trong CSV có date thật không
+        tmp_dir = WORK_DIR / "probe_last_trade"
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        zpath = tmp_dir / "index.zip"
+        download(index_url, zpath, timeout=180)
+
+        unzip_to(zpath, tmp_dir)
+        normalize_files(tmp_dir)  # tạo CafeF.INDEX.csv
+
+        if csv_contains_date(tmp_dir / "CafeF.INDEX.csv", d_iso):
+            return d_iso
+
+    raise RuntimeError("Không chốt được ngày giao dịch cuối từ web CafeF trong phạm vi lookback.")
+
+
+# ----------------------------
+# 2) Find latest Upto bundle (web)
+# ----------------------------
+@dataclass(frozen=True)
+class UptoBundle:
+    found_upto_date_iso: str
+    solieu_url: str
+    index_url: str
+
+
+def find_latest_upto_bundle_web() -> UptoBundle:
+    """
+    Tìm bộ Upto mới nhất (SolieuGD.Upto + Index.Upto) trong phạm vi lùi MAX_BACK_DAYS_FOR_UPTO.
+    """
+    today = now_gmt7().date()
+    for back in range(0, MAX_BACK_DAYS_FOR_UPTO + 1):
+        d = today - dt.timedelta(days=back)
+        d_iso = d.isoformat()
+        solieu_url, index_url = build_upto_urls_for_date(d_iso)
+        if head_ok(solieu_url) and head_ok(index_url):
+            return UptoBundle(found_upto_date_iso=d_iso, solieu_url=solieu_url, index_url=index_url)
+
+    raise RuntimeError("Không tìm thấy bộ Upto trong phạm vi lùi cho phép.")
+
+
+# ----------------------------
+# 3) Patch missing tail days: from (max_upto+1 .. expected_last_trade_date)
+# ----------------------------
+def patch_missing_days_until_expected(
+    extract_dir: Path,
+    expected_last_trade_date_iso: str,
+    max_probe_days: int = LOOKBACK_LAST_TRADE_DAYS,
+) -> Dict[str, object]:
+    """
+    Bổ sung các ngày bị thiếu để đạt tới expected_last_trade_date_iso:
+    - Tính max_date hiện có trong Upto (ưu tiên INDEX, fallback HSX/HNX/UPCOM)
+    - Duyệt từng ngày từ max_date+1 đến expected_last_trade_date (tăng dần):
+      + nếu daily solieu + daily index tồn tại => download => normalize => merge
+      + nếu không tồn tại => bỏ qua (cuối tuần/nghỉ)
+    Trả về:
+      - upto_max_date_before
+      - upto_max_date_after
+      - patched_days (list)
+      - appended_rows (dict)
+    """
+    files = {
+        "HSX": extract_dir / "CafeF.HSX.csv",
+        "HNX": extract_dir / "CafeF.HNX.csv",
+        "UPCOM": extract_dir / "CafeF.UPCOM.csv",
+        "INDEX": extract_dir / "CafeF.INDEX.csv",
+    }
+
+    # max date in Upto: ưu tiên INDEX
+    candidates = []
+    for k in ["INDEX", "HSX", "HNX", "UPCOM"]:
+        md = max_date_in_csv(files[k])
+        if md:
+            candidates.append(md)
+    upto_max_before = max(candidates) if candidates else None
+
+    if not upto_max_before:
+        return {
+            "upto_max_date_before": None,
+            "upto_max_date_after": None,
+            "patched_days": [],
+            "appended_rows": {"HSX": 0, "HNX": 0, "UPCOM": 0, "INDEX": 0},
+            "note": "Không xác định được max_date trong Upto (parse date thất bại).",
+        }
+
+    expected = iso_to_date(expected_last_trade_date_iso)
+    cur = iso_to_date(upto_max_before)
+
+    appended_rows = {"HSX": 0, "HNX": 0, "UPCOM": 0, "INDEX": 0}
+    patched_days: List[str] = []
+
+    # Nếu đã đủ rồi thì thôi
+    if cur >= expected:
+        return {
+            "upto_max_date_before": upto_max_before,
+            "upto_max_date_after": upto_max_before,
+            "patched_days": [],
+            "appended_rows": appended_rows,
+            "note": "Upto đã đủ tới expected_last_trade_date.",
+        }
+
+    # Bù tăng dần từng ngày
+    day = cur + dt.timedelta(days=1)
+    # chặn an toàn: không bù quá max_probe_days tính từ expected (tránh loop vô hạn)
+    min_allowed = expected - dt.timedelta(days=max_probe_days)
+
+    while day <= expected:
+        if day < min_allowed:
+            day += dt.timedelta(days=1)
+            continue
+
+        d_iso = day.isoformat()
+        solieu_url, index_url = build_daily_urls_for_date(d_iso)
+
+        if head_ok(solieu_url) and head_ok(index_url):
+            # download daily
+            daily_dir = WORK_DIR / f"daily_{yyyymmdd(day)}"
+            if daily_dir.exists():
+                shutil.rmtree(daily_dir)
+            daily_dir.mkdir(parents=True, exist_ok=True)
+
+            z_solieu = WORK_DIR / f"daily_solieu_{yyyymmdd(day)}.zip"
+            z_index = WORK_DIR / f"daily_index_{yyyymmdd(day)}.zip"
+            download(solieu_url, z_solieu, timeout=240)
+            download(index_url, z_index, timeout=240)
+
+            unzip_to(z_solieu, daily_dir)
+            unzip_to(z_index, daily_dir)
+            normalize_files(daily_dir)
+
+            # merge (đúng ngày)
+            appended_rows["HSX"] += merge_daily_into_upto(files["HSX"], daily_dir / "CafeF.HSX.csv", d_iso)
+            appended_rows["HNX"] += merge_daily_into_upto(files["HNX"], daily_dir / "CafeF.HNX.csv", d_iso)
+            appended_rows["UPCOM"] += merge_daily_into_upto(files["UPCOM"], daily_dir / "CafeF.UPCOM.csv", d_iso)
+            appended_rows["INDEX"] += merge_daily_into_upto(files["INDEX"], daily_dir / "CafeF.INDEX.csv", d_iso)
+
+            patched_days.append(d_iso)
+
+        # nếu không tồn tại => nghỉ/không publish => bỏ qua
+        day += dt.timedelta(days=1)
+
+    # max date after
+    candidates_after = []
+    for k in ["INDEX", "HSX", "HNX", "UPCOM"]:
+        md = max_date_in_csv(files[k])
+        if md:
+            candidates_after.append(md)
+    upto_max_after = max(candidates_after) if candidates_after else upto_max_before
+
+    return {
+        "upto_max_date_before": upto_max_before,
+        "upto_max_date_after": upto_max_after,
+        "patched_days": patched_days,
+        "appended_rows": appended_rows,
+        "note": "OK",
+    }
+
+
+# ----------------------------
+# Main
 # ----------------------------
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-
     if WORK_DIR.exists():
         shutil.rmtree(WORK_DIR)
     WORK_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1) Find latest bundle (prefer Upto)
-    bundle = find_latest_upto_bundle()
+    # Step 1: Chốt ngày giao dịch cuối từ web
+    expected_last_trade_date = find_expected_last_trade_date_web()
 
-    # 2) Download Upto bundle
-    solieu_zip = WORK_DIR / "solieu.zip"
-    index_zip = WORK_DIR / "index.zip"
-    download(bundle.solieu_url, solieu_zip)
-    download(bundle.index_url, index_zip)
+    # Step 2: Tìm bộ Upto mới nhất và tải về
+    upto_bundle = find_latest_upto_bundle_web()
 
-    extract_dir = WORK_DIR / "extract"
+    solieu_zip = WORK_DIR / "upto_solieu.zip"
+    index_zip = WORK_DIR / "upto_index.zip"
+    download(upto_bundle.solieu_url, solieu_zip)
+    download(upto_bundle.index_url, index_zip)
+
+    extract_dir = WORK_DIR / "extract_upto"
     extract_dir.mkdir(parents=True, exist_ok=True)
-
     unzip_to(solieu_zip, extract_dir)
     unzip_to(index_zip, extract_dir)
     normalize_files(extract_dir)
 
-    # 3) Patch if missing target date in Upto files:
-    target_iso = bundle.found_package_date_iso
-    patched = False
-    patch_detail: Dict[str, int] = {"HSX": 0, "HNX": 0, "UPCOM": 0, "INDEX": 0}
+    # Step 3: Kiểm tra đủ ngày chưa; nếu thiếu thì bù bằng daily
+    patch_report = patch_missing_days_until_expected(
+        extract_dir=extract_dir,
+        expected_last_trade_date_iso=expected_last_trade_date,
+        max_probe_days=LOOKBACK_LAST_TRADE_DAYS,
+    )
 
-    # Determine if any of 4 files missing target date
-    need_patch = False
-    for fn in ["CafeF.HSX.csv", "CafeF.HNX.csv", "CafeF.UPCOM.csv", "CafeF.INDEX.csv"]:
-        if not file_has_target_date(extract_dir / fn, target_iso):
-            need_patch = True
-            break
-
-    if need_patch:
-        daily_solieu_url, daily_index_url = build_daily_urls_for_date(target_iso)
-        if head_ok(daily_solieu_url) and head_ok(daily_index_url):
-            daily_solieu_zip = WORK_DIR / "daily_solieu.zip"
-            daily_index_zip = WORK_DIR / "daily_index.zip"
-            download(daily_solieu_url, daily_solieu_zip)
-            download(daily_index_url, daily_index_zip)
-
-            daily_dir = WORK_DIR / "daily_extract"
-            daily_dir.mkdir(parents=True, exist_ok=True)
-            unzip_to(daily_solieu_zip, daily_dir)
-            unzip_to(daily_index_zip, daily_dir)
-            normalize_files(daily_dir)
-
-            # Merge per file
-            added = merge_daily_into_upto(extract_dir / "CafeF.HSX.csv", daily_dir / "CafeF.HSX.csv", target_iso)
-            patch_detail["HSX"] = added
-            added = merge_daily_into_upto(extract_dir / "CafeF.HNX.csv", daily_dir / "CafeF.HNX.csv", target_iso)
-            patch_detail["HNX"] = added
-            added = merge_daily_into_upto(extract_dir / "CafeF.UPCOM.csv", daily_dir / "CafeF.UPCOM.csv", target_iso)
-            patch_detail["UPCOM"] = added
-            added = merge_daily_into_upto(extract_dir / "CafeF.INDEX.csv", daily_dir / "CafeF.INDEX.csv", target_iso)
-            patch_detail["INDEX"] = added
-
-            patched = any(v > 0 for v in patch_detail.values())
-
-    # 4) Build cafef.zip
+    # Step 4: Tạo cafef.zip (sau khi đã bù đủ)
     cafef_zip = OUT_DIR / "cafef.zip"
     make_zip(extract_dir, cafef_zip)
 
-    # 5) latest.json
-    data_date = read_data_date_from_index(extract_dir / "CafeF.INDEX.csv")
+    # Step 5: latest.json (log đầy đủ để audit)
     latest = {
         "run_time_gmt7": now_gmt7().strftime("%Y-%m-%d %H:%M:%S"),
-        "source": "CafeF ami_data (cafef1.mediacdn.vn)",
-        "bundle_pattern_used": bundle.pattern_used,
-        "found_package_date": bundle.found_package_date_iso,
-        "data_date_from_index": data_date,
-        "upto_urls": {
-            "solieu_url": bundle.solieu_url,
-            "index_url": bundle.index_url,
+        "timezone": "GMT+7",
+        "source": {
+            "cafef_base": BASE_URL,
+            "expected_last_trade_date_method": "Probe CafeF daily Index zip on web; verify CSV contains the date",
         },
-        "patch_daily": {
-            "attempted": bool(need_patch),
-            "patched": bool(patched),
-            "target_date": target_iso,
-            "detail_appended_rows": patch_detail,
+        "expected_last_trade_date": expected_last_trade_date,
+        "upto_bundle": {
+            "found_upto_date_iso": upto_bundle.found_upto_date_iso,
+            "solieu_url": upto_bundle.solieu_url,
+            "index_url": upto_bundle.index_url,
         },
-        "assets": {
-            "cafef_zip": "cafef.zip",
-        },
+        "patch_report": patch_report,
+        "assets": {"cafef_zip": "cafef.zip"},
     }
     (OUT_DIR / "latest.json").write_text(json.dumps(latest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print("OK: out/cafef.zip, out/latest.json")
+    print("expected_last_trade_date:", expected_last_trade_date)
+    print("patch_report:", json.dumps(patch_report, ensure_ascii=False))
 
 
 if __name__ == "__main__":
