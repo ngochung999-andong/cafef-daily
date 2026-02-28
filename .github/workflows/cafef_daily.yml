@@ -2,8 +2,8 @@ name: cafef-daily
 
 on:
   schedule:
-    - cron: "25 15 * * *"   # 15:25 UTC = 22:25 GMT+7
-  workflow_dispatch: {}
+    - cron: "25 15 * * *"  # 15:25 UTC = 22:25 GMT+7
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -32,17 +32,12 @@ jobs:
           python scripts/build_cafef_zip.py
           ls -lah out
 
-      - name: Publish GitHub Release (tag: latest)
+      - name: Create or update release "latest"
         uses: ncipollo/release-action@v1
         with:
           tag: latest
-          name: CafeF Daily (latest)
+          name: latest
           allowUpdates: true
           replacesArtifacts: true
           artifacts: "out/cafef.zip,out/latest.json"
           artifactErrorsFailBuild: true
-          makeLatest: true
-          body: |
-            Auto-generated daily CafeF package.
-            - cafef.zip (HSX/HNX/UPCOM/INDEX normalized)
-            - latest.json (run_time, data_date_from_index)
