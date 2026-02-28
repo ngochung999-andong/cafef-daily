@@ -186,6 +186,7 @@ def merge_daily_into_upto(upto_csv: Path, daily_csv: Path, target_iso: str) -> i
     """
     Ghép theo dòng (line) cho đúng target date.
     - chống trùng theo line của target date
+    - CHÈN NGAY SAU HEADER (dòng tiêu đề)
     """
     if not upto_csv.exists() or not daily_csv.exists():
         return 0
@@ -196,9 +197,10 @@ def merge_daily_into_upto(upto_csv: Path, daily_csv: Path, target_iso: str) -> i
         return 0
 
     header = upto_lines[0]
+    body = upto_lines[1:]
 
     existing_target: Set[str] = set()
-    for line in upto_lines[1:]:
+    for line in body:
         if extract_date_from_line(line) == target_iso:
             existing_target.add(line)
 
@@ -214,9 +216,11 @@ def merge_daily_into_upto(upto_csv: Path, daily_csv: Path, target_iso: str) -> i
     if not to_add:
         return 0
 
+    # chèn ngay sau header
     out = [header]
-    out.extend(upto_lines[1:])
     out.extend(to_add)
+    out.extend(body)
+
     upto_csv.write_text("\n".join(out) + "\n", encoding="utf-8")
     return len(to_add)
 
@@ -320,11 +324,8 @@ def main() -> None:
     download(upto.index_url, upto_index_zip)
 
     daily_solieu_url, daily_index_url = build_daily_urls_for_date(last_trade_iso)
-
     if not (head_ok(daily_solieu_url) and head_ok(daily_index_url)):
-        raise RuntimeError(
-            f"Daily zip cho ngày giao dịch cuối không tồn tại đủ bộ: {last_trade_iso}"
-        )
+        raise RuntimeError(f"Daily zip cho ngày giao dịch cuối không tồn tại đủ bộ: {last_trade_iso}")
 
     daily_solieu_zip = WORK_DIR / f"daily_solieu_{last_trade_yyyymmdd}.zip"
     daily_index_zip = WORK_DIR / f"daily_index_{last_trade_yyyymmdd}.zip"
@@ -346,7 +347,7 @@ def main() -> None:
     normalize_files(daily_dir, required_keys=("HSX", "HNX", "UPCOM", "INDEX"))
 
     # 3) Kiểm tra ngày tại file Upto xem có bằng ngày giao dịch cuối không,
-    #    nếu nhỏ hơn (thực tế: không có ngày đó) thì ghép daily đúng ngày đó vào.
+    #    nếu nhỏ hơn (không có ngày đó) thì ghép nội dung file theo ngày tương ứng vào
     merge_report = {"HSX": 0, "HNX": 0, "UPCOM": 0, "INDEX": 0}
     missing_report = {}
 
@@ -360,12 +361,9 @@ def main() -> None:
         if not has_last:
             merge_report[k] = merge_daily_into_upto(upto_csv, daily_csv, last_trade_iso)
 
-    # 4) Đổi tên Upto theo chuẩn
-    # (Đã chuẩn trong upto_dir: CafeF.<MARKET>.csv)
+    # 4) Đổi tên Upto theo chuẩn (đã chuẩn trong upto_dir)
 
-    # 5) Tạo cafef.zip gồm:
-    #    - 4 file Upto chuẩn hoá (đã ghép nếu thiếu)
-    #    - + 4 file Daily theo ngày giao dịch cuối (đặt tên rõ ràng trong zip)
+    # 5) Tạo cafef.zip gồm các file đã đổi tên và các file cafef theo ngày
     out_zip = OUT_DIR / "cafef.zip"
 
     include_files: List[Tuple[Path, str]] = []
