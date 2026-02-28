@@ -1,15 +1,4 @@
 # scripts/build_cafef_zip.py
-# ============================================================
-# MỤC TIÊU (đúng theo yêu cầu)
-# 1) Chốt ngày giao dịch cuối cùng (expected_last_trade_date) từ WEB CafeF:
-#    - Dò daily INDEX zip tồn tại (HEAD 200) và trong CSV INDEX có đúng ngày đó.
-# 2) Download bộ Upto mới nhất.
-# 3) Giải nén + chuẩn hoá ra 4 file:
-#    CafeF.HSX.csv / CafeF.HNX.csv / CafeF.UPCOM.csv / CafeF.INDEX.csv
-# 4) Kiểm tra max date trong Upto; nếu thiếu tới expected_last_trade_date:
-#    - Tải daily (SolieuGD + Index) cho từng ngày thiếu và ghép vào Upto (chống trùng).
-# 5) Đủ dữ liệu rồi mới tạo out/cafef.zip và out/latest.json
-# ============================================================
 
 from __future__ import annotations
 
@@ -20,15 +9,15 @@ import shutil
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple
 
 import requests
 
 TZ_OFFSET = 7  # GMT+7
 BASE_URL = "https://cafef1.mediacdn.vn/data/ami_data"
 
-LOOKBACK_LAST_TRADE_DAYS = 14       # dò ngày giao dịch cuối trên web
-MAX_BACK_DAYS_FOR_UPTO = 7          # dò bộ upto mới nhất trên web
+LOOKBACK_LAST_TRADE_DAYS = 14       # dò ngày giao dịch cuối trên web (daily INDEX)
+MAX_BACK_DAYS_FOR_UPTO = 7          # dò bộ Upto mới nhất
 MAX_BACK_DAYS_PATCH_GUARD = 21      # chặn an toàn patch
 
 OUT_DIR = Path("out")
@@ -39,8 +28,9 @@ WORK_DIR = Path("work")
 # Time helpers
 # ----------------------------
 def now_gmt7() -> dt.datetime:
-    # tránh warning utcnow() deprecation
-    return dt.datetime.now(dt.timezone.utc).astimezone(dt.timezone(dt.timedelta(hours=TZ_OFFSET))).replace(tzinfo=None)
+    return dt.datetime.now(dt.timezone.utc).astimezone(
+        dt.timezone(dt.timedelta(hours=TZ_OFFSET))
+    ).replace(tzinfo=None)
 
 
 def ddmmyyyy(d: dt.date) -> str:
@@ -130,10 +120,8 @@ def normalize_files(extract_dir: Path, required_keys: Tuple[str, ...]) -> None:
             name = f.name.upper()
             if f".{key}." in name or f".{key}_" in name or name.endswith(f"{key}.CSV"):
                 cand.append(f)
-
         if not cand:
             cand = [f for f in files if key in f.name.upper()]
-
         if not cand:
             raise RuntimeError(f"Thiếu file cho {key} trong zip.")
 
@@ -141,55 +129,53 @@ def normalize_files(extract_dir: Path, required_keys: Tuple[str, ...]) -> None:
         shutil.copyfile(cand[0], extract_dir / out_name)
 
 
+# ----------------------------
+# Robust date extraction (QUAN TRỌNG)
+# ----------------------------
 def parse_any_date_token(tok: str) -> Optional[str]:
-    tok = tok.strip()
+    tok = tok.strip().strip('"')
     if not tok:
         return None
 
+    # YYYY-MM-DD
     if re.match(r"^\d{4}-\d{2}-\d{2}$", tok):
         return tok
 
-    m = re.match(r"^(\d{2})[/-](\d{2})[/-](\d{4})$", tok)
+    # DD/MM/YYYY or DD-MM-YYYY
+    m = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", tok)
     if m:
-        dd, mm, yyyy = m.group(1), m.group(2), m.group(3)
-        return f"{yyyy}-{mm}-{dd}"
+        dd = int(m.group(1))
+        mm = int(m.group(2))
+        yyyy = int(m.group(3))
+        if 1 <= dd <= 31 and 1 <= mm <= 12:
+            return f"{yyyy:04d}-{mm:02d}-{dd:02d}"
 
+    # YYYYMMDD
     if re.match(r"^\d{8}$", tok):
-        yyyy, mm, dd = tok[0:4], tok[4:6], tok[6:8]
-        return f"{yyyy}-{mm}-{dd}"
+        yyyy, mm, dd = int(tok[0:4]), int(tok[4:6]), int(tok[6:8])
+        if 1 <= dd <= 31 and 1 <= mm <= 12:
+            return f"{yyyy:04d}-{mm:02d}-{dd:02d}"
 
     return None
 
 
-KeyType = Union[Tuple[str, str], Tuple[str]]  # (TICKER, ISO_DATE) or (ISO_DATE,)
-
-
-def extract_key_from_line(line: str) -> Optional[KeyType]:
+def extract_date_from_line(line: str) -> Optional[str]:
+    """
+    KHÔNG giả định cột ngày.
+    Quét toàn bộ cột (comma-separated) để tìm token giống ngày.
+    """
     parts = [p.strip() for p in line.split(",")]
-    if not parts:
-        return None
-
-    # Case: ticker col0, date col1
-    if len(parts) >= 2:
-        d = parse_any_date_token(parts[1])
-        if d and re.match(r"^[A-Za-z0-9\.\-_]{1,20}$", parts[0]):
-            return (parts[0].upper(), d)
-
-    # Case: date col0
-    d0 = parse_any_date_token(parts[0])
-    if d0:
-        return (d0,)
-
-    # Scan first 3 columns for date
-    for i in range(min(3, len(parts))):
-        di = parse_any_date_token(parts[i])
+    for p in parts:
+        di = parse_any_date_token(p)
         if di:
-            return (di,)
-
+            return di
     return None
 
 
 def max_date_in_csv(csv_path: Path) -> Optional[str]:
+    """
+    Lấy ngày lớn nhất trong CSV bằng cách quét tất cả cột mỗi dòng.
+    """
     if not csv_path.exists():
         return None
     lines = csv_path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -198,10 +184,9 @@ def max_date_in_csv(csv_path: Path) -> Optional[str]:
 
     max_iso: Optional[str] = None
     for line in lines[1:]:
-        k = extract_key_from_line(line)
-        if not k:
+        d = extract_date_from_line(line)
+        if not d:
             continue
-        d = k[-1]
         if (max_iso is None) or (d > max_iso):
             max_iso = d
     return max_iso
@@ -214,13 +199,19 @@ def csv_contains_date(csv_path: Path, target_iso: str) -> bool:
     if len(lines) < 2:
         return False
     for line in lines[1:]:
-        k = extract_key_from_line(line)
-        if k and k[-1] == target_iso:
+        d = extract_date_from_line(line)
+        if d == target_iso:
             return True
     return False
 
 
 def merge_daily_into_upto(upto_csv: Path, daily_csv: Path, target_iso: str) -> int:
+    """
+    Merge theo dòng (line) cho đúng target date.
+    - Chống trùng bằng set các line thuộc target date đã có trong Upto
+    - Append line thuộc target date từ daily nếu chưa có
+    Ưu tiên "chắc ăn" hơn key ticker/date vì format CSV không ổn định.
+    """
     if not upto_csv.exists() or not daily_csv.exists():
         return 0
 
@@ -231,23 +222,22 @@ def merge_daily_into_upto(upto_csv: Path, daily_csv: Path, target_iso: str) -> i
 
     header = upto_lines[0]
 
-    existing: Set[KeyType] = set()
+    # chỉ lưu set các dòng thuộc target date trong Upto để tiết kiệm RAM
+    existing_target_lines: Set[str] = set()
     for line in upto_lines[1:]:
-        k = extract_key_from_line(line)
-        if k:
-            existing.add(k)
+        d = extract_date_from_line(line)
+        if d == target_iso:
+            existing_target_lines.add(line)
 
     to_add: List[str] = []
     for line in daily_lines[1:]:
-        k = extract_key_from_line(line)
-        if not k:
+        d = extract_date_from_line(line)
+        if d != target_iso:
             continue
-        if k[-1] != target_iso:
-            continue
-        if k in existing:
+        if line in existing_target_lines:
             continue
         to_add.append(line)
-        existing.add(k)
+        existing_target_lines.add(line)
 
     if not to_add:
         return 0
@@ -270,7 +260,7 @@ def make_zip(src_dir: Path, zip_path: Path) -> None:
 
 
 # ----------------------------
-# 1) Find expected last trading day on web (CafeF daily INDEX zip)
+# 1) Find expected last trading day on web (daily INDEX zip)
 # ----------------------------
 def find_expected_last_trade_date_web() -> str:
     """
@@ -279,8 +269,8 @@ def find_expected_last_trade_date_web() -> str:
     - Trả về ngày mới nhất (dò từ hôm nay lùi dần)
     """
     today = now_gmt7().date()
-
     probe_dir = WORK_DIR / "probe_last_trade"
+
     for back in range(0, LOOKBACK_LAST_TRADE_DAYS + 1):
         d = today - dt.timedelta(days=back)
         d_iso = d.isoformat()
@@ -297,7 +287,6 @@ def find_expected_last_trade_date_web() -> str:
         download(index_url, zpath, timeout=180)
 
         unzip_to(zpath, probe_dir)
-        # QUAN TRỌNG: zip này thường chỉ có INDEX => chỉ yêu cầu INDEX
         normalize_files(probe_dir, required_keys=("INDEX",))
 
         if csv_contains_date(probe_dir / "CafeF.INDEX.csv", d_iso):
@@ -373,14 +362,14 @@ def patch_missing_days_until_expected(
             "note": "Upto đã đủ tới expected_last_trade_date.",
         }
 
-    # an toàn: không patch quá xa
-    if (expected - cur).days > MAX_BACK_DAYS_PATCH_GUARD:
+    gap = (expected - cur).days
+    if gap > MAX_BACK_DAYS_PATCH_GUARD:
         return {
             "upto_max_date_before": upto_max_before,
             "upto_max_date_after": upto_max_before,
             "patched_days": [],
             "appended_rows": appended_rows,
-            "note": f"Khoảng thiếu quá lớn ({(expected-cur).days} ngày) > guard {MAX_BACK_DAYS_PATCH_GUARD}. Dừng patch.",
+            "note": f"Khoảng thiếu {gap} ngày > guard {MAX_BACK_DAYS_PATCH_GUARD}. Dừng patch.",
         }
 
     day = cur + dt.timedelta(days=1)
@@ -388,7 +377,6 @@ def patch_missing_days_until_expected(
         d_iso = day.isoformat()
         solieu_url, index_url = build_daily_urls_for_date(d_iso)
 
-        # Daily ngày giao dịch phải có cả solieu + index
         if head_ok(solieu_url) and head_ok(index_url):
             daily_dir = WORK_DIR / f"daily_{yyyymmdd(day)}"
             if daily_dir.exists():
