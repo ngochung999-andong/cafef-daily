@@ -2,7 +2,7 @@ name: cafef-daily
 
 on:
   schedule:
-    - cron: "0 15 * * *"   # 15:00 UTC = 22:00 GMT+7
+    - cron: "0 14 * * *"   # 14:00 UTC = 21:00 GMT+7
   workflow_dispatch: {}
 
 permissions:
