@@ -2,7 +2,7 @@ name: cafef-daily
 
 on:
   schedule:
-    - cron: "0 14 * * MON-FRI"   # 14:00 UTC = 21:00 GMT+7, chỉ T2–T6
+    - cron: "*/10 13-16 * * MON-FRI"   # 13:00-16:59 UTC = 20:00-23:59 GMT+7, mỗi 10 phút (T2–T6)
   workflow_dispatch: {}
 
 permissions:
@@ -16,6 +16,34 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Guard - skip if already updated today (GMT+7)
+        shell: bash
+        run: |
+          set -e
+          TODAY_GMT7=$(TZ=Asia/Ho_Chi_Minh date +%F)
+          URL="https://github.com/ngochung999-andong/cafef-daily/releases/download/latest/latest.json"
+
+          echo "TODAY_GMT7=$TODAY_GMT7"
+          echo "CHECK=$URL"
+
+          if curl -fsSL "$URL" -o /tmp/latest.json; then
+            RUN_DATE=$(python - << 'PY'
+import json
+with open("/tmp/latest.json", "r", encoding="utf-8") as f:
+    data = json.load(f)
+run_time = data.get("run_time_gmt7", "")
+print(run_time.split(" ")[0] if run_time else "")
+PY
+)
+            echo "LATEST_RUN_DATE=$RUN_DATE"
+            if [ "$RUN_DATE" = "$TODAY_GMT7" ]; then
+              echo "Already updated today -> skip."
+              exit 0
+            fi
+          else
+            echo "latest.json not found yet -> continue."
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
