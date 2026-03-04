@@ -1,0 +1,71 @@
+name: cafef-daily
+
+on:
+  schedule:
+    - cron: "*/10 13-16 * * MON-FRI"   # 13:00-16:59 UTC = 20:00-23:59 GMT+7, mỗi 10 phút (T2–T6)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Guard - skip if already updated today (GMT+7)
+        shell: bash
+        run: |
+          set -e
+          TODAY_GMT7=$(TZ=Asia/Ho_Chi_Minh date +%F)
+          URL="https://github.com/ngochung999-andong/cafef-daily/releases/download/latest/latest.json"
+
+          echo "TODAY_GMT7=$TODAY_GMT7"
+          echo "CHECK=$URL"
+
+          if curl -fsSL "$URL" -o /tmp/latest.json; then
+            RUN_DATE=$(python - << 'PY'
+import json
+with open("/tmp/latest.json", "r", encoding="utf-8") as f:
+    data = json.load(f)
+run_time = data.get("run_time_gmt7", "")
+print(run_time.split(" ")[0] if run_time else "")
+PY
+)
+            echo "LATEST_RUN_DATE=$RUN_DATE"
+            if [ "$RUN_DATE" = "$TODAY_GMT7" ]; then
+              echo "Already updated today -> skip."
+              exit 0
+            fi
+          else
+            echo "latest.json not found yet -> continue."
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Build cafef.zip
+        run: |
+          python scripts/build_cafef_zip.py
+          ls -lah out
+
+      - name: Create or update release "latest"
+        uses: ncipollo/release-action@v1
+        with:
+          tag: latest
+          name: latest
+          allowUpdates: true
+          replacesArtifacts: true
+          artifacts: "out/cafef.zip,out/latest.json"
+          artifactErrorsFailBuild: true
