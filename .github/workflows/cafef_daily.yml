@@ -28,14 +28,8 @@ jobs:
           echo "CHECK=$URL"
 
           if curl -fsSL "$URL" -o /tmp/latest.json; then
-            RUN_DATE=$(python - <<'PY'
-import json
-with open("/tmp/latest.json", "r", encoding="utf-8") as f:
-    data = json.load(f)
-run_time = data.get("run_time_gmt7", "")
-print(run_time.split(" ")[0] if run_time else "")
-PY
-)
+            # Lấy YYYY-MM-DD từ field "run_time_gmt7": "YYYY-MM-DD HH:MM:SS"
+            RUN_DATE=$(grep -oE '"run_time_gmt7"\s*:\s*"[^"]+"' /tmp/latest.json | head -n 1 | sed -E 's/.*"([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/')
             echo "LATEST_RUN_DATE=$RUN_DATE"
             if [ "$RUN_DATE" = "$TODAY_GMT7" ]; then
               echo "Already updated today -> skip."
