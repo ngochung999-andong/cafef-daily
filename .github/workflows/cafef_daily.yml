@@ -2,7 +2,7 @@ name: cafef-daily
 
 on:
   schedule:
-    - cron: "*/10 13-16 * * MON-FRI"   # 13:00-16:59 UTC = 20:00-23:59 GMT+7, mỗi 10 phút (T2–T6)
+    - cron: "*/10 13-16 * * MON-FRI"   # 20:00-23:59 GMT+7, mỗi 10 phút (T2–T6)
   workflow_dispatch: {}
 
 permissions:
@@ -28,7 +28,7 @@ jobs:
           echo "CHECK=$URL"
 
           if curl -fsSL "$URL" -o /tmp/latest.json; then
-            RUN_DATE=$(python - << 'PY'
+            RUN_DATE=$(python - <<'PY'
 import json
 with open("/tmp/latest.json", "r", encoding="utf-8") as f:
     data = json.load(f)
