@@ -2,13 +2,13 @@ name: cafef-daily
 
 on:
   schedule:
-    - cron: "*/10 13-16 * * MON-FRI"   # 20:00-23:59 GMT+7, mỗi 10 phút (T2–T6)
+    - cron: "0 14 * * MON-FRI"   # 14:00 UTC = 21:00 GMT+7
   workflow_dispatch: {}
 
 permissions:
-  contents: write     # để update Release
-  pages: write        # để deploy GitHub Pages
-  id-token: write     # bắt buộc cho deploy-pages
+  contents: write
+  pages: write
+  id-token: write
 
 concurrency:
   group: "pages"
@@ -23,44 +23,46 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # (Tuỳ chọn nhưng khuyến nghị) Guard: nếu hôm nay đã có latest.json (GMT+7) thì skip
-      - name: Guard - skip if already updated today (GMT+7)
+      - name: Decide whether to build today (GMT+7)
+        id: decide
         shell: bash
         run: |
           set -e
           TODAY_GMT7=$(TZ=Asia/Ho_Chi_Minh date +%F)
           URL="https://github.com/ngochung999-andong/cafef-daily/releases/download/latest/latest.json"
+          NEED_BUILD=1
 
           echo "TODAY_GMT7=$TODAY_GMT7"
-          echo "CHECK=$URL"
-
           if curl -fsSL "$URL" -o /tmp/latest.json; then
             RUN_DATE=$(grep -oE '"run_time_gmt7"\s*:\s*"[^"]+"' /tmp/latest.json | head -n 1 | sed -E 's/.*"([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/')
             echo "LATEST_RUN_DATE=$RUN_DATE"
             if [ "$RUN_DATE" = "$TODAY_GMT7" ]; then
-              echo "Already updated today -> skip."
-              exit 0
+              NEED_BUILD=0
             fi
-          else
-            echo "latest.json not found yet -> continue."
           fi
 
+          echo "need_build=$NEED_BUILD" >> $GITHUB_OUTPUT
+
       - name: Set up Python
+        if: steps.decide.outputs.need_build == '1'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install deps
+        if: steps.decide.outputs.need_build == '1'
         run: |
           python -m pip install --upgrade pip
           pip install requests
 
       - name: Build cafef.zip
+        if: steps.decide.outputs.need_build == '1'
         run: |
           python scripts/build_cafef_zip.py
           ls -lah out
 
       - name: Create or update release "latest"
+        if: steps.decide.outputs.need_build == '1'
         uses: ncipollo/release-action@v1
         with:
           tag: latest
@@ -70,13 +72,29 @@ jobs:
           artifacts: "out/cafef.zip,out/latest.json"
           artifactErrorsFailBuild: true
 
-      # Publish GitHub Pages ngay từ file out/*
-      - name: Prepare Pages content
+      # Luôn luôn deploy Pages bằng assets từ Release latest (dù có build hay không)
+      - name: Prepare Pages content from Release latest
+        shell: bash
         run: |
+          set -e
           mkdir -p public
-          cp -f out/cafef.zip public/cafef.zip
-          cp -f out/latest.json public/latest.json
+
+          curl -fsSL -o public/cafef.zip  "https://github.com/ngochung999-andong/cafef-daily/releases/download/latest/cafef.zip"
+          curl -fsSL -o public/latest.json "https://github.com/ngochung999-andong/cafef-daily/releases/download/latest/latest.json"
+
+          cat > public/index.html << 'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>cafef-daily</title>
+          <h3>cafef-daily</h3>
+          <ul>
+            <li><a href="./cafef.zip">cafef.zip</a></li>
+            <li><a href="./latest.json">latest.json</a></li>
+          </ul>
+          HTML
+
           ls -lah public
+          sha256sum public/cafef.zip | head -n 1
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
