@@ -6,10 +6,16 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write
+  contents: write     # để update Release
+  pages: write        # để deploy GitHub Pages
+  id-token: write     # bắt buộc cho deploy-pages
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
 
 jobs:
-  build-and-release:
+  build-release-and-pages:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -17,6 +23,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # (Tuỳ chọn nhưng khuyến nghị) Guard: nếu hôm nay đã có latest.json (GMT+7) thì skip
       - name: Guard - skip if already updated today (GMT+7)
         shell: bash
         run: |
@@ -28,7 +35,6 @@ jobs:
           echo "CHECK=$URL"
 
           if curl -fsSL "$URL" -o /tmp/latest.json; then
-            # Lấy YYYY-MM-DD từ field "run_time_gmt7": "YYYY-MM-DD HH:MM:SS"
             RUN_DATE=$(grep -oE '"run_time_gmt7"\s*:\s*"[^"]+"' /tmp/latest.json | head -n 1 | sed -E 's/.*"([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/')
             echo "LATEST_RUN_DATE=$RUN_DATE"
             if [ "$RUN_DATE" = "$TODAY_GMT7" ]; then
@@ -63,3 +69,23 @@ jobs:
           replacesArtifacts: true
           artifacts: "out/cafef.zip,out/latest.json"
           artifactErrorsFailBuild: true
+
+      # Publish GitHub Pages ngay từ file out/*
+      - name: Prepare Pages content
+        run: |
+          mkdir -p public
+          cp -f out/cafef.zip public/cafef.zip
+          cp -f out/latest.json public/latest.json
+          ls -lah public
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
