@@ -23,64 +23,44 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Decide whether to build today (GMT+7)
-        id: decide
-        shell: bash
-        run: |
-          set -e
-          TODAY_GMT7=$(TZ=Asia/Ho_Chi_Minh date +%F)
-          URL="https://github.com/ngochung999-andong/cafef-daily/releases/download/latest/latest.json"
-          NEED_BUILD=1
-
-          echo "TODAY_GMT7=$TODAY_GMT7"
-          if curl -fsSL "$URL" -o /tmp/latest.json; then
-            RUN_DATE=$(grep -oE '"run_time_gmt7"\s*:\s*"[^"]+"' /tmp/latest.json | head -n 1 | sed -E 's/.*"([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/')
-            echo "LATEST_RUN_DATE=$RUN_DATE"
-            if [ "$RUN_DATE" = "$TODAY_GMT7" ]; then
-              NEED_BUILD=0
-            fi
-          fi
-
-          echo "need_build=$NEED_BUILD" >> $GITHUB_OUTPUT
-
       - name: Set up Python
-        if: steps.decide.outputs.need_build == '1'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install deps
-        if: steps.decide.outputs.need_build == '1'
         run: |
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Build cafef.zip
-        if: steps.decide.outputs.need_build == '1'
+      - name: Build cafef outputs
         run: |
           python scripts/build_cafef_zip.py
           ls -lah out
 
       - name: Create or update release "latest"
-        if: steps.decide.outputs.need_build == '1'
         uses: ncipollo/release-action@v1
         with:
           tag: latest
           name: latest
           allowUpdates: true
           replacesArtifacts: true
-          artifacts: "out/cafef.zip,out/latest.json"
+          artifacts: "out/cafef.zip,out/latest.json,out/CafeF.HSX.csv,out/CafeF.HNX.csv,out/CafeF.UPCOM.csv,out/CafeF.INDEX.csv"
           artifactErrorsFailBuild: true
 
-      # Luôn luôn deploy Pages bằng assets từ Release latest (dù có build hay không)
-      - name: Prepare Pages content from Release latest
+      - name: Prepare Pages content
         shell: bash
         run: |
           set -e
           mkdir -p public
 
-          curl -fsSL -o public/cafef.zip  "https://github.com/ngochung999-andong/cafef-daily/releases/download/latest/cafef.zip"
-          curl -fsSL -o public/latest.json "https://github.com/ngochung999-andong/cafef-daily/releases/download/latest/latest.json"
+          cp -f out/CafeF.HSX.csv   public/CafeF.HSX.csv
+          cp -f out/CafeF.HNX.csv   public/CafeF.HNX.csv
+          cp -f out/CafeF.UPCOM.csv public/CafeF.UPCOM.csv
+          cp -f out/CafeF.INDEX.csv public/CafeF.INDEX.csv
+          cp -f out/latest.json     public/latest.json
+
+          cp -f out/cafef.zip public/cafef.zip || true
 
           cat > public/index.html << 'HTML'
           <!doctype html>
@@ -88,13 +68,16 @@ jobs:
           <title>cafef-daily</title>
           <h3>cafef-daily</h3>
           <ul>
-            <li><a href="./cafef.zip">cafef.zip</a></li>
             <li><a href="./latest.json">latest.json</a></li>
+            <li><a href="./CafeF.INDEX.csv">CafeF.INDEX.csv</a></li>
+            <li><a href="./CafeF.HSX.csv">CafeF.HSX.csv</a></li>
+            <li><a href="./CafeF.HNX.csv">CafeF.HNX.csv</a></li>
+            <li><a href="./CafeF.UPCOM.csv">CafeF.UPCOM.csv</a></li>
+            <li><a href="./cafef.zip">cafef.zip</a></li>
           </ul>
           HTML
 
           ls -lah public
-          sha256sum public/cafef.zip | head -n 1
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
@@ -105,5 +88,4 @@ jobs:
           path: public
 
       - name: Deploy to GitHub Pages
-        id: deployment
         uses: actions/deploy-pages@v4
