@@ -1,21 +1,19 @@
-name: cafef-daily
+name: cafef-daily-pages
 
 on:
   schedule:
-    - cron: "0 14 * * MON-FRI"   # 14:00 UTC = 21:00 GMT+7
+    - cron: "0 14 * * MON-FRI"  # 14:00 UTC = 21:00 GMT+7 (T2–T6)
   workflow_dispatch: {}
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 concurrency:
-  group: "pages"
-  cancel-in-progress: true
+  group: cafef-daily-pages
+  cancel-in-progress: false
 
 jobs:
-  build-release-and-pages:
+  build-and-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -38,6 +36,56 @@ jobs:
           python scripts/build_cafef_zip.py
           ls -lah out
 
+      - name: Prepare Pages content
+        run: |
+          set -e
+          rm -rf public
+          mkdir -p public
+
+          # bắt buộc có
+          test -f out/latest.json
+          test -f out/cafef.zip
+
+          cp -f out/latest.json public/latest.json
+          cp -f out/cafef.zip   public/cafef.zip
+
+          # 4 CSV (nếu script đã tạo trong out/)
+          # Nếu file thiếu thì fail luôn để bạn biết ngay (không publish nửa vời)
+          test -f out/CafeF.INDEX.csv
+          test -f out/CafeF.HSX.csv
+          test -f out/CafeF.HNX.csv
+          test -f out/CafeF.UPCOM.csv
+
+          cp -f out/CafeF.INDEX.csv public/CafeF.INDEX.csv
+          cp -f out/CafeF.HSX.csv   public/CafeF.HSX.csv
+          cp -f out/CafeF.HNX.csv   public/CafeF.HNX.csv
+          cp -f out/CafeF.UPCOM.csv public/CafeF.UPCOM.csv
+
+          # index.html liệt kê link
+          cat > public/index.html <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8" />
+          <title>cafef-daily</title>
+          <h3>cafef-daily</h3>
+          <ul>
+            <li><a href="latest.json">latest.json</a></li>
+            <li><a href="CafeF.INDEX.csv">CafeF.INDEX.csv</a></li>
+            <li><a href="CafeF.HSX.csv">CafeF.HSX.csv</a></li>
+            <li><a href="CafeF.HNX.csv">CafeF.HNX.csv</a></li>
+            <li><a href="CafeF.UPCOM.csv">CafeF.UPCOM.csv</a></li>
+            <li><a href="cafef.zip">cafef.zip</a></li>
+          </ul>
+          HTML
+
+      # Publish ra branch gh-pages
+      - name: Publish to gh-pages (GitHub Pages)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: public
+          force_orphan: true
+
+      # (Tuỳ chọn) Giữ Release latest để bạn vẫn có link /releases/download/latest/...
       - name: Create or update release "latest"
         uses: ncipollo/release-action@v1
         with:
@@ -45,47 +93,5 @@ jobs:
           name: latest
           allowUpdates: true
           replacesArtifacts: true
-          artifacts: "out/cafef.zip,out/latest.json,out/CafeF.HSX.csv,out/CafeF.HNX.csv,out/CafeF.UPCOM.csv,out/CafeF.INDEX.csv"
+          artifacts: "out/cafef.zip,out/latest.json,out/CafeF.INDEX.csv,out/CafeF.HSX.csv,out/CafeF.HNX.csv,out/CafeF.UPCOM.csv"
           artifactErrorsFailBuild: true
-
-      - name: Prepare Pages content
-        shell: bash
-        run: |
-          set -e
-          mkdir -p public
-
-          cp -f out/CafeF.HSX.csv   public/CafeF.HSX.csv
-          cp -f out/CafeF.HNX.csv   public/CafeF.HNX.csv
-          cp -f out/CafeF.UPCOM.csv public/CafeF.UPCOM.csv
-          cp -f out/CafeF.INDEX.csv public/CafeF.INDEX.csv
-          cp -f out/latest.json     public/latest.json
-
-          cp -f out/cafef.zip public/cafef.zip || true
-
-          cat > public/index.html << 'HTML'
-          <!doctype html>
-          <meta charset="utf-8">
-          <title>cafef-daily</title>
-          <h3>cafef-daily</h3>
-          <ul>
-            <li><a href="./latest.json">latest.json</a></li>
-            <li><a href="./CafeF.INDEX.csv">CafeF.INDEX.csv</a></li>
-            <li><a href="./CafeF.HSX.csv">CafeF.HSX.csv</a></li>
-            <li><a href="./CafeF.HNX.csv">CafeF.HNX.csv</a></li>
-            <li><a href="./CafeF.UPCOM.csv">CafeF.UPCOM.csv</a></li>
-            <li><a href="./cafef.zip">cafef.zip</a></li>
-          </ul>
-          HTML
-
-          ls -lah public
-
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: public
-
-      - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v4
