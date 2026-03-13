@@ -1,0 +1,56 @@
+{
+  "run_time_gmt7": "2026-03-13 22:59:51",
+  "timezone": "GMT+7",
+  "last_trade_date_web_probe": "2026-03-13",
+  "upto_bundle": {
+    "found_date": "2026-03-13",
+    "kind": "upto",
+    "solieu_url": "https://cafef1.mediacdn.vn/data/ami_data/20260313/CafeF.SolieuGD.Upto13032026.zip",
+    "index_url": "https://cafef1.mediacdn.vn/data/ami_data/20260313/CafeF.Index.Upto13032026.zip"
+  },
+  "daily_pair": {
+    "date": "2026-03-13",
+    "solieu_url": "https://cafef1.mediacdn.vn/data/ami_data/20260313/CafeF.SolieuGD.13032026.zip",
+    "index_url": "https://cafef1.mediacdn.vn/data/ami_data/20260313/CafeF.Index.13032026.zip"
+  },
+  "patch_report": {
+    "HSX": {
+      "max_before": "2026-03-13",
+      "max_after": "2026-03-13",
+      "target_date": "2026-03-13",
+      "had_target_after": true,
+      "inserted_lines": 0
+    },
+    "HNX": {
+      "max_before": "2026-03-13",
+      "max_after": "2026-03-13",
+      "target_date": "2026-03-13",
+      "had_target_after": true,
+      "inserted_lines": 0
+    },
+    "UPCOM": {
+      "max_before": "2026-03-13",
+      "max_after": "2026-03-13",
+      "target_date": "2026-03-13",
+      "had_target_after": true,
+      "inserted_lines": 0
+    },
+    "INDEX": {
+      "max_before": "2026-03-12",
+      "max_after": "2026-03-13",
+      "target_date": "2026-03-13",
+      "had_target_after": true,
+      "inserted_lines": 2
+    }
+  },
+  "outputs": {
+    "pages_csv": [
+      "CafeF.HSX.csv",
+      "CafeF.HNX.csv",
+      "CafeF.UPCOM.csv",
+      "CafeF.INDEX.csv",
+      "latest.json"
+    ],
+    "zip": "cafef.zip"
+  }
+}
