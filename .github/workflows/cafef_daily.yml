@@ -2,7 +2,7 @@ name: cafef-daily-pages
 
 on:
   schedule:
-    - cron: "0 14 * * MON-FRI"  # 14:00 UTC = 21:00 GMT+7 (T2–T6)
+    - cron: "0 13 * * MON-FRI"  # 13:00 UTC = 20:00 GMT+7 (T2–T6)
   workflow_dispatch: {}
 
 permissions:
